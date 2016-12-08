@@ -3,17 +3,23 @@ from Bio import Entrez
 from Bio.Entrez import efetch, read
 
 Entrez.email = "nishantiam@gmail.com"
-dict_data = {}
+pubmed_fetch = {}
 def fetch_data(pmid):
     handle = efetch(db='pubmed', id=pmid, retmode='xml')
     for xml_data in read(handle):
         try:
-            pmid = xml_data['MedlineCitation']['PMID'].strip()
-            dict_data[pmid] = {}
-            dict_data[pmid]['title'] = xml_data['MedlineCitation']['Article']['ArticleTitle']
-            dict_data[pmid]['abstract'] = xml_data['MedlineCitation']['Article']['Abstract']['AbstractText']
-            # some are not there
-            # dict_data[pmid]['smsh'] = xml_data['MedlineCitation']['MeshHeadingList']
+            if ('MedlineCitation' in xml_data.keys()):
+                pmid = xml_data['MedlineCitation']['PMID'].strip()
+                pubmed_fetch[pmid] = {}
+                pubmed_fetch[pmid]['title'] = xml_data['MedlineCitation']['Article']['ArticleTitle']
+                pubmed_fetch[pmid]['abstract'] = xml_data['MedlineCitation']['Article']['Abstract']['AbstractText']
+                # some are not there
+                # pubmed_fetch[pmid]['smsh'] = xml_data['MedlineCitation']['MeshHeadingList']
+            else:
+                pmid = xml_data['BookDocument']['PMID'].strip()
+                pubmed_fetch[pmid] = {}
+                pubmed_fetch[pmid]['title'] = xml_data['BookDocument']['ArticleTitle']
+                pubmed_fetch[pmid]['abstract'] = xml_data['BookDocument']['Abstract']['AbstractText']
         except Exception as e:
             print (e, pmid)
             pass
@@ -33,4 +39,4 @@ for a in stacked_keys:
     i += 1
     fetch_data(str(a)[1:-1])
 
-json.dump(dict_data, open('pubmed_fetch.json', 'w'))
+json.dump(pubmed_fetch, open('pubmed_fetch.json', 'w'))
