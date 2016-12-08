@@ -30,13 +30,14 @@ for a in connection:
                 print (a, b)
                 pass
 
-# Remove punctuation and lower it
+# Remove punctuation and remove special chars and lower it
 import re
 import string
 regex = re.compile('[%s]' % re.escape(string.punctuation))
 for a in pubmed_fetch:
-        pubmed_fetch[a]['abstract'] = regex.sub('', pubmed_fetch[a]['abstract'])
-        pubmed_fetch[a]['abstract'] = pubmed_fetch[a]['abstract'].lower()
+    temp = regex.sub('', pubmed_fetch[a]['abstract'])
+    temp = temp.lower()
+    pubmed_fetch[a]['abstract'] = "".join([c for c in temp if c in string.ascii_lowercase or c in string.whitespace or c in string.digits])
 
 json.dump(pubmed_fetch, open('pubmed_fetch.json', 'w'))
 json.dump(connection, open('connection_re.json', 'w'))
