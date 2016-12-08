@@ -30,4 +30,13 @@ for a in connection:
                 print (a, b)
                 pass
 
+# Remove punctuation and lower it
+import re
+import string
+regex = re.compile('[%s]' % re.escape(string.punctuation))
+for a in pubmed_fetch:
+        pubmed_fetch[a]['abstract'] = regex.sub('', pubmed_fetch[a]['abstract'])
+        pubmed_fetch[a]['abstract'] = pubmed_fetch[a]['abstract'].lower()
+
+json.dump(pubmed_fetch, open('pubmed_fetch.json', 'w'))
 json.dump(connection, open('connection_re.json', 'w'))
