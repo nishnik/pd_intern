@@ -1,5 +1,5 @@
 import numpy as np
-
+import json
 from keras import backend
 from keras.layers import Input, merge
 from keras.layers.core import Dense, Lambda, Reshape
@@ -30,12 +30,12 @@ FILTER_LENGTH = 1 # We only consider one time step for convolutions.
 
 def get_vector(sentence):
     words = re.sub("[^\w]", " ",  sentence).split()
-    print (words)
+    # print (words)
     output_vec = [] # size will len(words) - 2
     sliding_window = []
     for ind in range(len(words)):
         word = words[ind]
-        print (word)
+        # print (word)
         # if (len(word) >= 3):
         word_vec = [0] * TOTAL_LETTER_GRAMS
         word = "#" + word + "#"
@@ -44,7 +44,6 @@ def get_vector(sentence):
             hash_word += possible_chars.index(word[i])
             hash_word += possible_chars.index(word[i+1]) * 38
             hash_word += possible_chars.index(word[i+2]) * 38 * 38
-            print (hash_word)
             word_vec[hash_word] = 1
         if (ind < 2):
             sliding_window.append(word_vec)
@@ -53,22 +52,17 @@ def get_vector(sentence):
             output_vec.append(sliding_window[0] + sliding_window [1] + sliding_window[2])
             del sliding_window[0]
     del sliding_window
-    return output_vec
+    return np.array(output_vec)
 
 def get_negatives(pmid):
     random.seed(pmid)
     output_vec = []
-    while (len(output_vec) < 4):
+    while (len(output_vec) < J):
         ind = random.randrange(0, len(all_keys))
         if not all_keys[ind] in connection[pmid]:
             output_vec.append(all_keys[ind])
     return output_vec
 
-to_add = set()
-for a in pubmed_fetch:
-    for b in pubmed_fetch[a]['abstract']:
-        if (not b in bein and not b in string.whitespace):
-            to_add.add(b)
 
 def R(vects):
     """
@@ -189,14 +183,23 @@ for i in range(sample_size):
 # member of the "1" class.
 y = np.ones(1)
 
+break_count = 1
+
 for i in connection:
-    l_Qs = get_vector(pubmed_fetch[i])
-    pos_l_Ds = get_vector(pubmed_fetch[connection[i][0]])
-
-
-    print (i+1, "/", sample_size)
-    history = model.fit([l_Qs[i], pos_l_Ds[i]] + neg_l_Ds[i], y, nb_epoch = 1, verbose = 1)
-
+    break_count -= 1
+    l_Qs = get_vector(pubmed_fetch[i]['abstract'])
+    l_Qs = l_Qs.reshape(1, l_Qs.shape[0], l_Qs.shape[1])
+    pos_l_Ds = get_vector(pubmed_fetch[connection[i][0]]['abstract'])
+    pos_l_Ds = pos_l_Ds.reshape(1, pos_l_Ds.shape[0], pos_l_Ds.shape[1])
+    neg_l_Ds = []
+    for a in get_negatives(i):
+        neg_l_Ds.append(get_vector(pubmed_fetch[a]['abstract']))
+    print (type(l_Qs), type(pos_l_Ds), type(neg_l_Ds))
+    # print (i+1, "/", sample_size)
+    history = model.fit([l_Qs, pos_l_Ds] + neg_l_Ds, y, nb_epoch = 1, verbose = 1)
+    if (not break_count):
+        break
+    
 # Here, I walk through an example of how to define a function for calculating output
 # from the computational graph. Let's define a function that calculates R(Q, D+)
 # for a given query and clicked document. The function depends on two inputs, query
