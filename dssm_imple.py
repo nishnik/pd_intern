@@ -6,19 +6,21 @@ from keras.layers.core import Dense, Lambda, Reshape
 from keras.layers.convolutional import Convolution1D
 from keras.models import Model
 
-
+import random
 connection = json.load(open('connection_re.json'))
 pubmed_fetch = json.load(open('pubmed_fetch.json'))
+all_keys = list(connection.keys())
 
 import string
 import re
+import json
 
 possible_chars = "?abcdefghijklmnopqrstuvwxyz0123456789#" # we dont count ? in possible chars
 
 
 LETTER_GRAM_SIZE = 3 # See section 3.2.
 WINDOW_SIZE = 3 # See section 3.2.
-TOTAL_LETTER_GRAMS = int(5.4 * 1e4) # Determined from data. See section 3.2. (26+10+1)^3
+TOTAL_LETTER_GRAMS = int(5.5 * 1e4) # Determined from data. See section 3.2. (26+10+1)^3
 WORD_DEPTH = WINDOW_SIZE * TOTAL_LETTER_GRAMS # See equation (1).
 K = 300 # Dimensionality of the max-pooling layer. See section 3.4.
 L = 128 # Dimensionality of latent semantic space. See section 3.5.
@@ -28,32 +30,39 @@ FILTER_LENGTH = 1 # We only consider one time step for convolutions.
 
 def get_vector(sentence):
     words = re.sub("[^\w]", " ",  sentence).split()
+    print (words)
     output_vec = [] # size will len(words) - 2
     sliding_window = []
     for ind in range(len(words)):
         word = words[ind]
-        if (len(word) >= 3):
-            word_vec = [0] * TOTAL_LETTER_GRAMS
-            word = "#" + word + "#"
-            for i in range(len(word)-2):
-                hash_word = 0
-                hash_word += possible_chars[word[i]]
-                hash_word += possible_chars[word[i+1]] * 38
-                hash_word += possible_chars[word[i+2]] * 38 * 38
-                words_vec[hash_word] = 1
-        
+        print (word)
+        # if (len(word) >= 3):
+        word_vec = [0] * TOTAL_LETTER_GRAMS
+        word = "#" + word + "#"
+        for i in range(len(word)-2):
+            hash_word = 0
+            hash_word += possible_chars.index(word[i])
+            hash_word += possible_chars.index(word[i+1]) * 38
+            hash_word += possible_chars.index(word[i+2]) * 38 * 38
+            print (hash_word)
+            word_vec[hash_word] = 1
         if (ind < 2):
-            sliding_window.append(words_vec)
+            sliding_window.append(word_vec)
         else:
-            del sliding_window[:TOTAL_LETTER_GRAMS]
-            sliding_window.append(words_vec)
-            output_vec.append(sliding_window)
+            sliding_window.append(word_vec) 
+            output_vec.append(sliding_window[0] + sliding_window [1] + sliding_window[2])
+            del sliding_window[0]
+    del sliding_window
     return output_vec
-        
 
-
-
-
+def get_negatives(pmid):
+    random.seed(pmid)
+    output_vec = []
+    while (len(output_vec) < 4):
+        ind = random.randrange(0, len(all_keys))
+        if not all_keys[ind] in connection[pmid]:
+            output_vec.append(all_keys[ind])
+    return output_vec
 
 to_add = set()
 for a in pubmed_fetch:
@@ -154,6 +163,11 @@ sample_size = 10
 l_Qs = []
 pos_l_Ds = []
 
+
+
+
+
+
 for i in range(sample_size):
     query_len = np.random.randint(1, 10)
     l_Q = np.random.rand(1, query_len, WORD_DEPTH)
@@ -175,7 +189,11 @@ for i in range(sample_size):
 # member of the "1" class.
 y = np.ones(1)
 
-for i in range(sample_size):
+for i in connection:
+    l_Qs = get_vector(pubmed_fetch[i])
+    pos_l_Ds = get_vector(pubmed_fetch[connection[i][0]])
+
+
     print (i+1, "/", sample_size)
     history = model.fit([l_Qs[i], pos_l_Ds[i]] + neg_l_Ds[i], y, nb_epoch = 1, verbose = 1)
 
