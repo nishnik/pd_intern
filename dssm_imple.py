@@ -6,21 +6,27 @@ from keras.layers.core import Dense, Lambda, Reshape
 from keras.layers.convolutional import Convolution1D
 from keras.models import Model
 
+import string
+import re
+import json
 import random
+## Here connection is a dict which gives positively related documents id
+## {'12' : ['13', '14'], '13' : ['14', '15']}
+##
+## Pubmed_fetch contains the abstract and tite for a given id i.e
+## {'12' : {'title' : 'title of 12', 'abstract' : 'abstract of 12'}}
 connection = json.load(open('connection_re.json'))
 pubmed_fetch = json.load(open('pubmed_fetch.json'))
 all_keys = list(connection.keys())
 
-import string
-import re
-import json
-
+## Possible characters in all the abstracts
 possible_chars = "?abcdefghijklmnopqrstuvwxyz0123456789#" # we dont count ? in possible chars
 
 
-LETTER_GRAM_SIZE = 3 # See section 3.2.
-WINDOW_SIZE = 3 # See section 3.2.
-TOTAL_LETTER_GRAMS = int(5.5 * 1e4) # Determined from data. See section 3.2. (26+10+1)^3
+
+LETTER_GRAM_SIZE = 3 # this is to decide bigram, trigram etc for letters See section 3.2
+WINDOW_SIZE = 3 # this is to decide window for words in a sentence (sliding window) See section 3.2
+TOTAL_LETTER_GRAMS = int(5.5 * 1e4) # Determined from data. See section 3.2. (26(abc..)+10(012..)+1(#)+1(?))^3
 WORD_DEPTH = WINDOW_SIZE * TOTAL_LETTER_GRAMS # See equation (1).
 K = 300 # Dimensionality of the max-pooling layer. See section 3.4.
 L = 128 # Dimensionality of latent semantic space. See section 3.5.
@@ -28,40 +34,48 @@ J = 4 # Number of random unclicked documents serving as negative examples for a 
 FILTER_LENGTH = 1 # We only consider one time step for convolutions.
 
 
+## gives you a numpy.ndarray that is the vector for given sentence
+## TODO: optimization our array only has 0,1(1 byte). dont use int - 8 bytes
 def get_vector(sentence):
+    ## get words in the sentence
     words = re.sub("[^\w]", " ",  sentence).split()
-    # print (words)
-    output_vec = [] # size will len(words) - 2
-    sliding_window = []
+    output_vec = [] # size will len(words) - 2, and each element will have size of WORD_DEPTH
+    sliding_window = [] # size will be WINDOW_SIZE, and each element will have size of TOTAL_LETTER_GRAMS
     for ind in range(len(words)):
         word = words[ind]
-        # print (word)
         # if (len(word) >= 3):
         word_vec = [0] * TOTAL_LETTER_GRAMS
         word = "#" + word + "#"
         for i in range(len(word)-2):
+            # used hashing
             hash_word = 0
             hash_word += possible_chars.index(word[i])
-            hash_word += possible_chars.index(word[i+1]) * 38
-            hash_word += possible_chars.index(word[i+2]) * 38 * 38
+            hash_word += possible_chars.index(word[i+1]) * len(possible_chars)
+            hash_word += possible_chars.index(word[i+2]) * len(possible_chars)**2
             word_vec[hash_word] = 1
-        if (ind < 2):
+        if (ind < WINDOW_SIZE-1):
             sliding_window.append(word_vec)
         else:
-            sliding_window.append(word_vec) 
-            output_vec.append(sliding_window[0] + sliding_window [1] + sliding_window[2])
+            sliding_window.append(word_vec)
+            temp = []
+            for s in sliding_window:
+                temp += s
+            output_vec.append(temp)
+            del temp
             del sliding_window[0]
     del sliding_window
     return np.array(output_vec)
 
+
+## Get negative doc ids
 def get_negatives(pmid):
     random.seed(pmid)
-    output_vec = []
-    while (len(output_vec) < J):
+    output_ids = []
+    while (len(output_ids) < J):
         ind = random.randrange(0, len(all_keys))
         if not all_keys[ind] in connection[pmid]:
-            output_vec.append(all_keys[ind])
-    return output_vec
+            output_ids.append(all_keys[ind])
+    return output_ids
 
 
 def R(vects):
@@ -132,7 +146,7 @@ R_Q_D_ns = [R_layer([query_sem, neg_doc_sem]) for neg_doc_sem in neg_doc_sems] #
 
 concat_Rs = merge([R_Q_D_p] + R_Q_D_ns, mode = "concat")
 concat_Rs = Reshape((J + 1, 1))(concat_Rs)
-################################### J = negative docs number, 1 = pos docs number
+## J = negative docs number, 1 = pos docs number
 
 # In this step, we multiply each R(Q, D) value by gamma. In the paper, gamma is
 # described as a smoothing factor for the softmax function, and it's set empirically
@@ -152,32 +166,6 @@ prob = Lambda(lambda x: x[0][0] / backend.sum(x[0]), output_shape = (1, ))(expon
 model = Model(input = [query, pos_doc] + neg_docs, output = prob)
 model.compile(optimizer = "adadelta", loss = "binary_crossentropy")
 
-# Build a random data set.
-sample_size = 10
-l_Qs = []
-pos_l_Ds = []
-
-
-
-
-
-
-for i in range(sample_size):
-    query_len = np.random.randint(1, 10)
-    l_Q = np.random.rand(1, query_len, WORD_DEPTH)
-    l_Qs.append(l_Q)
-    
-    doc_len = np.random.randint(50, 500)
-    l_D = np.random.rand(1, doc_len, WORD_DEPTH)
-    pos_l_Ds.append(l_D)
-
-neg_l_Ds = []
-for i in range(sample_size):
-    possibilities = list(range(sample_size))
-    possibilities.remove(i)
-    negatives = np.random.choice(possibilities, J)
-    neg_l_Ds.append([pos_l_Ds[negative] for negative in negatives])
-
 # Because we're using the "binary_crossentropy" loss function, we can pretend that
 # we're dealing with a binary classification problem and that every sample is a
 # member of the "1" class.
@@ -193,13 +181,15 @@ for i in connection:
     pos_l_Ds = pos_l_Ds.reshape(1, pos_l_Ds.shape[0], pos_l_Ds.shape[1])
     neg_l_Ds = []
     for a in get_negatives(i):
-        neg_l_Ds.append(get_vector(pubmed_fetch[a]['abstract']))
+        temp = get_vector(pubmed_fetch[a]['abstract'])
+        neg_l_Ds.append(temp.reshape(1, temp.shape[0], temp.shape[1]))
     print (type(l_Qs), type(pos_l_Ds), type(neg_l_Ds))
     # print (i+1, "/", sample_size)
     history = model.fit([l_Qs, pos_l_Ds] + neg_l_Ds, y, nb_epoch = 1, verbose = 1)
-    if (not break_count):
+    if (break_count == 0):
         break
-    
+
+
 # Here, I walk through an example of how to define a function for calculating output
 # from the computational graph. Let's define a function that calculates R(Q, D+)
 # for a given query and clicked document. The function depends on two inputs, query
