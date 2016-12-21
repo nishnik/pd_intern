@@ -5,11 +5,11 @@ from keras.layers import Input, merge
 from keras.layers.core import Dense, Lambda, Reshape
 from keras.layers.convolutional import Convolution1D
 from keras.models import Model
-
 import string
 import re
-import json
 import random
+import operator
+
 ## Here connection is a dict which gives positively related documents id
 ## {'12' : ['13', '14'], '13' : ['14', '15']}
 ##
@@ -20,13 +20,11 @@ pubmed_fetch = json.load(open('pubmed_fetch.json'))
 all_keys = list(connection.keys())
 
 ## Possible characters in all the abstracts
-possible_chars = "?abcdefghijklmnopqrstuvwxyz0123456789#" # we dont count ? in possible chars
-
-
+possible_chars = "?abcdefghijklmnopqrstuvwxyz#" # we dont count ? in possible chars
 
 LETTER_GRAM_SIZE = 3 # this is to decide bigram, trigram etc for letters See section 3.2
 WINDOW_SIZE = 3 # this is to decide window for words in a sentence (sliding window) See section 3.2
-TOTAL_LETTER_GRAMS = int(5.5 * 1e4) # Determined from data. See section 3.2. (26(abc..)+10(012..)+1(#)+1(?))^3
+TOTAL_LETTER_GRAMS = int(2.2 * 1e4) # Determined from data. See section 3.2. (26(abc..)+1(#)+1(?))^3
 WORD_DEPTH = WINDOW_SIZE * TOTAL_LETTER_GRAMS # See equation (1).
 K = 300 # Dimensionality of the max-pooling layer. See section 3.4.
 L = 128 # Dimensionality of latent semantic space. See section 3.5.
@@ -35,7 +33,6 @@ FILTER_LENGTH = 1 # We only consider one time step for convolutions.
 
 
 ## gives you a numpy.ndarray that is the vector for given sentence
-## TODO: optimization our array only has 0,1(1 byte). dont use int - 8 bytes
 def get_vector(sentence):
     ## get words in the sentence
     words = re.sub("[^\w]", " ",  sentence).split()
@@ -67,9 +64,8 @@ def get_vector(sentence):
     return np.array(output_vec)
 
 
-## Get negative doc ids
+## Get random negative doc ids
 def get_negatives(pmid):
-    random.seed(pmid)
     output_ids = []
     while (len(output_ids) < J):
         ind = random.randrange(0, len(all_keys))
@@ -94,59 +90,65 @@ query = Input(shape = (None, WORD_DEPTH))
 pos_doc = Input(shape = (None, WORD_DEPTH))
 neg_docs = [Input(shape = (None, WORD_DEPTH)) for j in range(J)]
 
-# Query model. The paper uses separate neural nets for queries and documents (see section 5.2).
-
 # In this step, we transform each word vector with WORD_DEPTH dimensions into its
 # convolved representation with K dimensions. K is the number of kernels/filters
 # being used in the operation. Essentially, the operation is taking the dot product
 # of a single weight matrix (W_c) with each of the word vectors (l_t) from the
 # query matrix (l_Q), adding a bias vector (b_c), and then applying the tanh function.
-# That is, h_Q = tanh(W_c • l_Q + b_c). With that being said, that's not actually
+# That is, h_Q = tanh(W_c * l_Q + b_c). With that being said, that's not actually
 # how the operation is being calculated here. To tie the weights of the weight
 # matrix (W_c) together, we have to use a one-dimensional convolutional layer. 
 # Further, we have to transpose our query matrix (l_Q) so that time is the first
 # dimension rather than the second (as described in the paper). That is, l_Q[0, :]
 # represents our first word vector rather than l_Q[:, 0]. We can think of the weight
 # matrix (W_c) as being similarly transposed such that each kernel is a column
-# of W_c. Therefore, h_Q = tanh(l_Q • W_c + b_c) with l_Q, W_c, and b_c being
+# of W_c. Therefore, h_Q = tanh(l_Q * W_c + b_c) with l_Q, W_c, and b_c being
 # the transposes of the matrices described in the paper.
-query_conv = Convolution1D(K, FILTER_LENGTH, border_mode = "same", input_shape = (None, WORD_DEPTH), activation = "tanh")(query) # See equation (2).
 
 # Next, we apply a max-pooling layer to the convolved query matrix. Keras provides
 # its own max-pooling layers, but they cannot handle variable length input (as
 # far as I can tell). As a result, I define my own max-pooling layer here. In the
 # paper, the operation selects the maximum value for each row of h_Q, but, because
 # we're using the transpose, we're selecting the maximum value for each column.
-query_max = Lambda(lambda x: x.max(axis = 1), output_shape = (K, ))(query_conv) # See section 3.4.
 
 # In this step, we generate the semantic vector represenation of the query. This
-# is a standard neural network dense layer, i.e., y = tanh(W_s • v + b_s).
-query_sem = Dense(L, activation = "tanh", input_dim = K)(query_max) # See section 3.5.
+# is a standard neural network dense layer, i.e., y = tanh(W_s * v + b_s).
 
-# The document equivalent of the above query model.
 doc_conv = Convolution1D(K, FILTER_LENGTH, border_mode = "same", input_shape = (None, WORD_DEPTH), activation = "tanh")
 doc_max = Lambda(lambda x: x.max(axis = 1), output_shape = (K, ))
 doc_sem = Dense(L, activation = "tanh", input_dim = K)
 
+
+query_conv = doc_conv(query) # See equation (2).
+query_max = doc_max(query_conv) # See section 3.4.
+query_sem = doc_sem(query_max) # See section 3.5.
+
 pos_doc_conv = doc_conv(pos_doc)
-neg_doc_convs = [doc_conv(neg_doc) for neg_doc in neg_docs]
-
 pos_doc_max = doc_max(pos_doc_conv)
-neg_doc_maxes = [doc_max(neg_doc_conv) for neg_doc_conv in neg_doc_convs]
-
 pos_doc_sem = doc_sem(pos_doc_max)
+
+neg_doc_maxes = [doc_max(neg_doc_conv) for neg_doc_conv in neg_doc_convs]
+neg_doc_convs = [doc_conv(neg_doc) for neg_doc in neg_docs]
 neg_doc_sems = [doc_sem(neg_doc_max) for neg_doc_max in neg_doc_maxes]
+
 
 # This layer calculates the cosine similarity between the semantic representations of
 # a query and a document.
 R_layer = Lambda(R, output_shape = (1, )) # See equation (4).
 
+# Returns the final 128 Dimensional vector
+def return_repr(vects):
+    return vects[0]
+
+repr = Lambda(return_repr, output_shape = (1, 128))
+repr_vect = repr([query_sem])
+
 R_Q_D_p = R_layer([query_sem, pos_doc_sem]) # See equation (4).
 R_Q_D_ns = [R_layer([query_sem, neg_doc_sem]) for neg_doc_sem in neg_doc_sems] # See equation (4).
 
 concat_Rs = merge([R_Q_D_p] + R_Q_D_ns, mode = "concat")
-concat_Rs = Reshape((J + 1, 1))(concat_Rs)
 ## J = negative docs number, 1 = pos docs number
+concat_Rs = Reshape((J + 1, 1))(concat_Rs)
 
 # In this step, we multiply each R(Q, D) value by gamma. In the paper, gamma is
 # described as a smoothing factor for the softmax function, and it's set empirically
@@ -171,37 +173,95 @@ model.compile(optimizer = "adadelta", loss = "binary_crossentropy")
 # member of the "1" class.
 y = np.ones(1)
 
-break_count = 1
+train_till = int(0.8 * len(all_keys))
 
-for i in connection:
-    break_count -= 1
-    l_Qs = get_vector(pubmed_fetch[i]['abstract'])
+for ind in range(train_till):
+    try:
+        print (ind+1, "/", train_till)
+        i = all_keys[ind]
+        l_Qs = get_vector(pubmed_fetch[i]['abstract'])
+        ## For making it compatible with model, we reshape it
+        l_Qs = l_Qs.reshape(1, l_Qs.shape[0], l_Qs.shape[1])
+        for jind in range(min(len(connection[i]), 6)):
+            j = connection[i][jind]
+            pos_l_Ds = get_vector(pubmed_fetch[j]['abstract'])
+            pos_l_Ds = pos_l_Ds.reshape(1, pos_l_Ds.shape[0], pos_l_Ds.shape[1])
+            neg_l_Ds = []
+            for a in get_negatives(i):
+                temp = get_vector(pubmed_fetch[a]['abstract'])
+                neg_l_Ds.append(temp.reshape(1, temp.shape[0], temp.shape[1]))   
+            history = model.fit([l_Qs, pos_l_Ds] + neg_l_Ds, y, nb_epoch = 1, verbose = 1)
+        ## save evry 1000 iterations
+        if (ind % 1000 == 0):
+            model.save_weights("model.h5")
+            print ("saved")
+    except Exception as e:
+        print (ind, all_keys[ind], e)
+        continue
+
+
+### TESTING ###
+
+
+get_repr = backend.function([query], repr_vect)
+# 128-D representation of the abstracts
+dict_repr = {}
+
+count = 0
+model.load_weights("model_final.h5")
+for a in all_keys:
+    count += 1
+    print (count)
+    l_Qs = get_vector(pubmed_fetch[a]['abstract'])
     l_Qs = l_Qs.reshape(1, l_Qs.shape[0], l_Qs.shape[1])
-    pos_l_Ds = get_vector(pubmed_fetch[connection[i][0]]['abstract'])
-    pos_l_Ds = pos_l_Ds.reshape(1, pos_l_Ds.shape[0], pos_l_Ds.shape[1])
-    neg_l_Ds = []
-    for a in get_negatives(i):
-        temp = get_vector(pubmed_fetch[a]['abstract'])
-        neg_l_Ds.append(temp.reshape(1, temp.shape[0], temp.shape[1]))
-    print (type(l_Qs), type(pos_l_Ds), type(neg_l_Ds))
-    # print (i+1, "/", sample_size)
-    history = model.fit([l_Qs, pos_l_Ds] + neg_l_Ds, y, nb_epoch = 1, verbose = 1)
-    if (break_count == 0):
-        break
+    dict_repr[a] = get_repr([l_Qs])
+
+count = 0
+# Top similar documents
+dict_top = {}
+# Top 100
+dict_top[100] = {}
+for a in dict_repr:
+    count += 1
+    print (count)
+    vec1 = dict_repr[a]
+    top_100 = {}
+    for b in dict_repr:
+        if not b == a:
+            val = np.dot(vec1, dict_repr[b])
+            if len(top_100) < 100:
+                top_100[b] = val
+            else:
+                m = min(top_100, key=top_100.get)
+                if (val > top_100[m]):
+                    del top_100[m]
+                    top_100[b] = val
+    dict_top[100][a] = top_100
+
+count = 0
+
+for a in [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90]:
+    dict_top[a]= {}
+
+for a in dict_top[100]:
+    count += 1
+    print (count)
+    for num in [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90]:
+        tmp = sorted(dict_top[100][a].iteritems(), key = operator.itemgetter(1), reverse = True)
+        dict_top[num][a] = dict(tmp[:num])
 
 
-# Here, I walk through an example of how to define a function for calculating output
-# from the computational graph. Let's define a function that calculates R(Q, D+)
-# for a given query and clicked document. The function depends on two inputs, query
-# and pos_doc. That is, if you start at the point in the graph where R(Q, D+) is
-# calculated and then backtrack as far as possible, you'll end up at two different
-# starting points, query and pos_doc. As a result, we supply those inputs in a list
-# to the function. This particular function only calculates a single output, but
-# multiple outputs are possible (see the next example).
-get_R_Q_D_p = backend.function([query, pos_doc], R_Q_D_p)
-get_R_Q_D_p([l_Qs[0], pos_l_Ds[0]])
-
-# A slightly more complex function. Notice that both neg_docs and the output are
-# lists.
-get_R_Q_D_ns = backend.function([query] + neg_docs, R_Q_D_ns)
-get_R_Q_D_ns([l_Qs[0]] + neg_l_Ds[0])
+for ORDER in [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
+    p_f, p_t, t_f = 0, 0, 0
+    for a in all_keys:
+        count_real = 0
+        for aa in dict_top[ORDER][a]:
+             if aa in connection[a]:
+                count_real += 1
+        p_f += count_real
+        p_t += min(len(connection[a]), ORDER)
+        t_f += ORDER
+    recall = float(p_f)/p_t
+    precision = float(p_f)/t_f
+    f1 = 2*precision*recall/(precision + recall)
+    print ("ORDER: ", ORDER, recall, precision, f1)
