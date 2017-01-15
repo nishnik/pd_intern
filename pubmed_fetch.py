@@ -6,7 +6,8 @@ Entrez.email = "nishantiam@gmail.com"
 pubmed_fetch = {}
 def fetch_data(pmid):
     handle = efetch(db='pubmed', id=pmid, retmode='xml')
-    for xml_data in read(handle):
+    a = read(handle)
+    for xml_data in a['PubmedArticle']:
         try:
             if ('MedlineCitation' in xml_data.keys()):
                 pmid = xml_data['MedlineCitation']['PMID'].strip()
@@ -39,4 +40,4 @@ for a in stacked_keys:
     i += 1
     fetch_data(str(a)[1:-1])
 
-json.dump(pubmed_fetch, open('pubmed_fetch.json', 'w'))
+json.dump(pubmed_fetch, open('pubmed_fetch_orig.json', 'w'))
