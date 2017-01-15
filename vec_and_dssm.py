@@ -20,12 +20,15 @@ pubmed_fetch = json.load(open('pubmed_fetch_gens.json'))
 all_keys = list(pubmed_fetch.keys())
 
 WINDOW_SIZE = 3 # this is to decide window for words in a sentence (sliding window) See section 3.2
-TOTAL_LETTER_GRAMS = 200 # Determined from data. See section 3.2. (26(abc..)+1(#)+1(?))^3
+TOTAL_LETTER_GRAMS = 200 # WWord Vector Dimension
 WORD_DEPTH = WINDOW_SIZE * TOTAL_LETTER_GRAMS # See equation (1).
 K = 300 # Dimensionality of the max-pooling layer. See section 3.4.
 L = 128 # Dimensionality of latent semantic space. See section 3.5.
-J = 4 # Number of random unclicked documents serving as negative examples for a query. See section 4.
-FILTER_LENGTH = 2 # We only consider one time step for convolutions.
+J = 4 # Number of Negative Documents
+FILTER_LENGTH = 1 # We only consider one time step for convolutions.
+
+
+# Loading the word embeddings 
 
 def load_emb(types_file, emb_file):
     emb = {}
@@ -50,6 +53,7 @@ for a in corpus:
     if not a in emb:
         print (a)
 
+# We keep word vectors for only those words which are in corpus
 
 emb_keys = emb.keys()
 for a in emb_keys:
@@ -57,7 +61,7 @@ for a in emb_keys:
         del emb[a]
 
 
-
+# So we have emb['word'] equal to vector representation of 'word'
 
 
 ## gives you a numpy.ndarray that is the vector for given sentence
@@ -68,7 +72,6 @@ def get_vector(sentence):
     sliding_window = [] # size will be WINDOW_SIZE, and each element will have size of TOTAL_LETTER_GRAMS
     for ind in range(len(words)):
         word = words[ind]
-        # if (len(word) >= 3):
         word_vec = emb[word]
         if (ind < WINDOW_SIZE-1):
             sliding_window.append(word_vec)
@@ -85,7 +88,7 @@ def get_vector(sentence):
 
 
 train_till = int(0.8 * len(all_keys))
-## Get random negative doc ids
+## Get random negative doc ids for given pmid
 def get_negatives(pmid):
     output_ids = []
     while (len(output_ids) < J):
@@ -227,7 +230,7 @@ get_repr = backend.function([query], repr_vect)
 dict_repr = {}
 
 count = 0
-# model.load_weights("model_final.h5")
+model.load_weights("model_final.h5")
 for a in pubmed_fetch.keys():
     count += 1
     print (count)
