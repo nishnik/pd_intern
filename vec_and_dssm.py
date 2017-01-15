@@ -9,54 +9,77 @@ import string
 import re
 import random
 import operator
-
+from itertools import izip
 ## Here connection is a dict which gives positively related documents id
 ## {'12' : ['13', '14'], '13' : ['14', '15']}
 ##
 ## Pubmed_fetch contains the abstract and tite for a given id i.e
 ## {'12' : {'title' : 'title of 12', 'abstract' : 'abstract of 12'}}
 connection = json.load(open('connection_re.json'))
-pubmed_fetch = json.load(open('pubmed_fetch.json'))
-all_keys = list(connection.keys())
+pubmed_fetch = json.load(open('pubmed_fetch_gens.json'))
+all_keys = list(pubmed_fetch.keys())
 
-## Possible characters in all the abstracts
-possible_chars = "?abcdefghijklmnopqrstuvwxyz#" # we dont count ? in possible chars
-
-LETTER_GRAM_SIZE = 3 # this is to decide bigram, trigram etc for letters See section 3.2
 WINDOW_SIZE = 3 # this is to decide window for words in a sentence (sliding window) See section 3.2
-TOTAL_LETTER_GRAMS = int(2.2 * 1e4) # Determined from data. See section 3.2. (26(abc..)+1(#)+1(?))^3
+TOTAL_LETTER_GRAMS = 200 # WWord Vector Dimension
 WORD_DEPTH = WINDOW_SIZE * TOTAL_LETTER_GRAMS # See equation (1).
 K = 300 # Dimensionality of the max-pooling layer. See section 3.4.
 L = 128 # Dimensionality of latent semantic space. See section 3.5.
-J = 4 # Number of random unclicked documents serving as negative examples for a query. See section 4.
+J = 4 # Number of Negative Documents
 FILTER_LENGTH = 1 # We only consider one time step for convolutions.
+
+
+# Loading the word embeddings 
+
+def load_emb(types_file, emb_file):
+    emb = {}
+    with open(types_file, 'r') as types_f, open(emb_file, 'r') as emb_f:
+            for line1, line2 in izip(types_f, emb_f):
+                line2 = line2.strip()
+                emb[line1.strip('\r\n').decode('UTF-8', 'ignore')] = np.array(map(float, line2.split(' ')), dtype=np.float32)
+    return emb
+
+count = 0
+corpus = set()
+for a in list(pubmed_fetch.keys()):
+    count += 1
+    print count
+    for b in pubmed_fetch[a]['abstract'].lower().split():
+        corpus.add(b)
+
+
+emb = load_emb("types.txt", "vectors.txt")
+
+for a in corpus:
+    if not a in emb:
+        print (a)
+
+# We keep word vectors for only those words which are in corpus
+
+emb_keys = emb.keys()
+for a in emb_keys:
+    if not a in corpus:
+        del emb[a]
+
+
+# So we have emb['word'] equal to vector representation of 'word'
 
 
 ## gives you a numpy.ndarray that is the vector for given sentence
 def get_vector(sentence):
     ## get words in the sentence
-    words = re.sub("[^\w]", " ",  sentence).split()
+    words = sentence.split()
     output_vec = [] # size will len(words) - 2, and each element will have size of WORD_DEPTH
     sliding_window = [] # size will be WINDOW_SIZE, and each element will have size of TOTAL_LETTER_GRAMS
     for ind in range(len(words)):
         word = words[ind]
-        # if (len(word) >= 3):
-        word_vec = [0] * TOTAL_LETTER_GRAMS
-        word = "#" + word + "#"
-        for i in range(len(word)-2):
-            # used hashing
-            hash_word = 0
-            hash_word += possible_chars.index(word[i])
-            hash_word += possible_chars.index(word[i+1]) * len(possible_chars)
-            hash_word += possible_chars.index(word[i+2]) * len(possible_chars)**2
-            word_vec[hash_word] = 1
+        word_vec = emb[word]
         if (ind < WINDOW_SIZE-1):
             sliding_window.append(word_vec)
         else:
             sliding_window.append(word_vec)
-            temp = []
-            for s in sliding_window:
-                temp += s
+            temp = sliding_window[0]
+            for s in sliding_window[1:]:
+                temp = np.concatenate((temp, s))
             output_vec.append(temp)
             del temp
             del sliding_window[0]
@@ -64,11 +87,12 @@ def get_vector(sentence):
     return np.array(output_vec)
 
 
-## Get random negative doc ids
+train_till = int(0.8 * len(all_keys))
+## Get random negative doc ids for given pmid
 def get_negatives(pmid):
     output_ids = []
     while (len(output_ids) < J):
-        ind = random.randrange(0, len(all_keys))
+        ind = random.randrange(0, train_till)
         if not all_keys[ind] in connection[pmid]:
             output_ids.append(all_keys[ind])
     return output_ids
@@ -127,8 +151,8 @@ pos_doc_conv = doc_conv(pos_doc)
 pos_doc_max = doc_max(pos_doc_conv)
 pos_doc_sem = doc_sem(pos_doc_max)
 
-neg_doc_maxes = [doc_max(neg_doc_conv) for neg_doc_conv in neg_doc_convs]
 neg_doc_convs = [doc_conv(neg_doc) for neg_doc in neg_docs]
+neg_doc_maxes = [doc_max(neg_doc_conv) for neg_doc_conv in neg_doc_convs]
 neg_doc_sems = [doc_sem(neg_doc_max) for neg_doc_max in neg_doc_maxes]
 
 
@@ -173,27 +197,25 @@ model.compile(optimizer = "adadelta", loss = "binary_crossentropy")
 # member of the "1" class.
 y = np.ones(1)
 
-train_till = int(0.8 * len(all_keys))
-
 for ind in range(train_till):
     try:
         print (ind+1, "/", train_till)
         i = all_keys[ind]
-        l_Qs = get_vector(pubmed_fetch[i]['abstract'])
+        l_Qs = get_vector(pubmed_fetch[i]['abstract'].lower())
         ## For making it compatible with model, we reshape it
         l_Qs = l_Qs.reshape(1, l_Qs.shape[0], l_Qs.shape[1])
         for jind in range(min(len(connection[i]), 6)):
             j = connection[i][jind]
-            pos_l_Ds = get_vector(pubmed_fetch[j]['abstract'])
+            pos_l_Ds = get_vector(pubmed_fetch[j]['abstract'].lower())
             pos_l_Ds = pos_l_Ds.reshape(1, pos_l_Ds.shape[0], pos_l_Ds.shape[1])
             neg_l_Ds = []
             for a in get_negatives(i):
-                temp = get_vector(pubmed_fetch[a]['abstract'])
+                temp = get_vector(pubmed_fetch[a]['abstract'].lower())
                 neg_l_Ds.append(temp.reshape(1, temp.shape[0], temp.shape[1]))   
             history = model.fit([l_Qs, pos_l_Ds] + neg_l_Ds, y, nb_epoch = 1, verbose = 1)
         ## save evry 1000 iterations
         if (ind % 1000 == 0):
-            model.save_weights("model.h5")
+            model.save_weights("model_gens.h5")
             print ("saved")
     except Exception as e:
         print (ind, all_keys[ind], e)
@@ -209,10 +231,10 @@ dict_repr = {}
 
 count = 0
 model.load_weights("model_final.h5")
-for a in all_keys:
+for a in pubmed_fetch.keys():
     count += 1
     print (count)
-    l_Qs = get_vector(pubmed_fetch[a]['abstract'])
+    l_Qs = get_vector(pubmed_fetch[a]['abstract'].lower())
     l_Qs = l_Qs.reshape(1, l_Qs.shape[0], l_Qs.shape[1])
     dict_repr[a] = get_repr([l_Qs])
 
@@ -221,7 +243,7 @@ count = 0
 dict_top = {}
 # Top 100
 dict_top[100] = {}
-for a in dict_repr:
+for a in all_keys[train_till:]:
     count += 1
     print (count)
     vec1 = dict_repr[a]
@@ -253,7 +275,7 @@ for a in dict_top[100]:
 
 for ORDER in [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
     p_f, p_t, t_f = 0, 0, 0
-    for a in all_keys:
+    for a in all_keys[train_till:]:
         count_real = 0
         for aa in dict_top[ORDER][a]:
              if aa in connection[a]:
