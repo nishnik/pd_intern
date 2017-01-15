@@ -6,4 +6,4 @@ This was done in Winters 2k16 at Parallel Dots
 - [dssm_imple.py](dssm_imple.py) is the original implementation
 - [vec_and_dssm.py](vec_and_dssm.py) is CDSSM with pre-trained word vectors (Consider this as the final code)
 - [kmax_vec_dssm.py](kmax_vec_dssm.py) is attempt to implement kmax (It doesnt give a good result)
-- [lda.py][lda.py] is baseline implementation
+- [lda.py](lda.py) is baseline implementation
